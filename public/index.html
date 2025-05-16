@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Motor Control</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background-color: #f4f4f4; }
+        button { padding: 15px 30px; font-size: 1.2em; cursor: pointer; background-color: #007bff; color: white; border: none; border-radius: 5px; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #status { margin-top: 20px; font-size: 1.1em; }
+    </style>
+</head>
+<body>
+    <h1>Motor Control Interface</h1>
+    <button id="startButton">Lancer les Instructions</button>
+    <div id="status">Prêt à démarrer.</div>
+
+    <script src="app.js"></script>
+</body>
+</html> 
