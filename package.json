@@ -1,0 +1,20 @@
+{
+  "name": "arduino-motor-control",
+  "version": "1.0.0",
+  "description": "Control stepper motors with Johnny-Five based on API instructions",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "arduino",
+    "johnny-five",
+    "stepper-motor"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.17.1",
+    "johnny-five": "^2.1.0"
+  }
+} 
