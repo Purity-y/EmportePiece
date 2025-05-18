@@ -1,7 +1,19 @@
 const five = require("johnny-five");
 const express = require("express");
+const http = require('http'); // Required for socket.io
+const { Server } = require("socket.io"); // Required for socket.io
+
+const SIMULATION_MODE = true; // Mettre à false pour le fonctionnement normal avec Arduino
+const SIMULATION_DELAY_MS = 500; // Délai en ms pour simuler chaque étape en mode simulation
 
 const app = express();
+const server = http.createServer(app); // Create HTTP server for socket.io
+const io = new Server(server, { // Initialize socket.io
+  cors: {
+    origin: "*", // Allow all origins for simplicity, adjust for production
+    methods: ["GET", "POST"]
+  }
+});
 const port = 3000;
 
 app.use(express.static('public')); // Serve static files from 'public' directory
@@ -44,11 +56,11 @@ app.post('/emergency-stop', (req, res) => {
   res.status(200).json({ message: "Emergency stop signal processed. Motors disabled via Enable Pins." });
 });
 
-app.listen(port, () => {
-  console.log(`Mock API server listening at http://localhost:${port}`);
+server.listen(port, () => { // socket.io listens on this server
+  console.log(`API and WebSocket server listening at http://localhost:${port}`);
 });
 
-const board = new five.Board();
+const board = SIMULATION_MODE ? null : new five.Board(); // Ne pas initialiser le board en mode simulation
 
 let motorAvancer;
 let motorPlier;
@@ -58,6 +70,7 @@ let isBoardReady = false;
 let isRunningInstructions = false;
 let lastPlierInstructionValeur = 0; // Variable to store the last PLIER value
 let emergencyStopRequested = false; // ADDED: Flag for emergency stop
+let currentProgress = 0; // Variable to store current progress percentage
 
 
 // ADD THESE CONSTANTS - Update with your actual pin numbers
@@ -66,54 +79,72 @@ const MOTOR_PLIER_ENABLE_PIN = 5;   // Example pin, please change
 // Logic for enable pins: LOW = Enabled, HIGH = Disabled (common for A4988/DRV8825)
 // If your logic is inverted, adjust pin.high()/pin.low() calls accordingly.
 
-board.on("ready", () => {
-  console.log("Board ready!");
-
-  // Initialize Enable Pins
-  motorAvancerEnablePinCtrl = new five.Pin(MOTOR_AVANCER_ENABLE_PIN);
-  motorPlierEnablePinCtrl = new five.Pin(MOTOR_PLIER_ENABLE_PIN);
-
-  // Ensure motors are enabled by default when board is ready
-  motorAvancerEnablePinCtrl.low(); // Enable motorAvancer
-  motorPlierEnablePinCtrl.low();   // Enable motorPlier
-  console.log(`Motor Enable Pins initialized: Avancer (Pin ${MOTOR_AVANCER_ENABLE_PIN}), Plier (Pin ${MOTOR_PLIER_ENABLE_PIN}). Motors enabled.`);
-
-  // Define stepper motor for AVANCER
-  // IMPORTANT: Replace with your actual pin numbers
-  // Pins: PUL-, PUL+, DIR-, DIR+
-  // Johnny-Five stepper supports various interfaces.
-  // For PUL/DIR, we use the DRIVER interface.
-  // motor1.step(steps, direction, speed, callback)
-  motorAvancer = new five.Stepper({
-    type: five.Stepper.TYPE.DRIVER,
-    stepsPerRev: 200, // Adjust if your motor has a different number of steps per revolution
-    pins: {
-      step: 3, // Connect to PUL+
-      dir: 9,  // Connect to DIR+
-      // PUL- and DIR- should be connected to GND if your driver requires it.
-      // Or, if they are enable pins, connect them appropriately.
-    },
-  });
-
-  // Define stepper motor for PLIER
-  // IMPORTANT: Replace with your actual pin numbers
-  motorPlier = new five.Stepper({
-    type: five.Stepper.TYPE.DRIVER,
-    stepsPerRev: 180, // Adjust if your motor has a different number of steps per revolution
-    pins: {
-      step: 12, // Connect to PUL+
-      dir: 10,  // Connect to DIR+
-    },
-  });
-
+if (SIMULATION_MODE) {
+  console.log("<<<<< MODE SIMULATION ACTIF >>>>>");
+  isBoardReady = true; // En mode simulation, la carte est considérée comme prête immédiatement
+  // Simuler l'existence des pins de contrôle pour éviter les erreurs
+  motorAvancerEnablePinCtrl = { low: () => console.log("SIM: motorAvancerEnablePinCtrl.low()"), high: () => console.log("SIM: motorAvancerEnablePinCtrl.high()") };
+  motorPlierEnablePinCtrl = { low: () => console.log("SIM: motorPlierEnablePinCtrl.low()"), high: () => console.log("SIM: motorPlierEnablePinCtrl.high()") };
   
+  // Simuler l'initialisation des moteurs pour que les vérifications ne échouent pas
+  motorAvancer = { step: () => console.log("SIM: motorAvancer.step()") };
+  motorPlier = { step: () => console.log("SIM: motorPlier.step()") };
+  
+  console.log("SIM: Board et moteurs simulés prêts.");
+  // Appeler motorEnablePinCtrl.low() pour simuler l'activation des moteurs
+  motorAvancerEnablePinCtrl.low();
+  motorPlierEnablePinCtrl.low();
 
-  isBoardReady = true;
-  console.log("Motors initialized. Ready to receive instructions via interface.");
+} else {
+  board.on("ready", () => {
+    console.log("Board ready!");
 
-  // DO NOT run instructions automatically anymore
-  // runInstructions(); 
-});
+    // Initialize Enable Pins
+    motorAvancerEnablePinCtrl = new five.Pin(MOTOR_AVANCER_ENABLE_PIN);
+    motorPlierEnablePinCtrl = new five.Pin(MOTOR_PLIER_ENABLE_PIN);
+
+    // Ensure motors are enabled by default when board is ready
+    motorAvancerEnablePinCtrl.low(); // Enable motorAvancer
+    motorPlierEnablePinCtrl.low();   // Enable motorPlier
+    console.log(`Motor Enable Pins initialized: Avancer (Pin ${MOTOR_AVANCER_ENABLE_PIN}), Plier (Pin ${MOTOR_PLIER_ENABLE_PIN}). Motors enabled.`);
+
+    // Define stepper motor for AVANCER
+    // IMPORTANT: Replace with your actual pin numbers
+    // Pins: PUL-, PUL+, DIR-, DIR+
+    // Johnny-Five stepper supports various interfaces.
+    // For PUL/DIR, we use the DRIVER interface.
+    // motor1.step(steps, direction, speed, callback)
+    motorAvancer = new five.Stepper({
+      type: five.Stepper.TYPE.DRIVER,
+      stepsPerRev: 200, // Adjust if your motor has a different number of steps per revolution
+      pins: {
+        step: 3, // Connect to PUL+
+        dir: 9,  // Connect to DIR+
+        // PUL- and DIR- should be connected to GND if your driver requires it.
+        // Or, if they are enable pins, connect them appropriately.
+      },
+    });
+
+    // Define stepper motor for PLIER
+    // IMPORTANT: Replace with your actual pin numbers
+    motorPlier = new five.Stepper({
+      type: five.Stepper.TYPE.DRIVER,
+      stepsPerRev: 180, // Adjust if your motor has a different number of steps per revolution
+      pins: {
+        step: 12, // Connect to PUL+
+        dir: 10,  // Connect to DIR+
+      },
+    });
+
+    
+
+    isBoardReady = true;
+    console.log("Motors initialized. Ready to receive instructions via interface.");
+
+    // DO NOT run instructions automatically anymore
+    // runInstructions(); 
+  });
+}
 
 // New endpoint to trigger instructions
 app.post('/start-instructions', async (req, res) => {
@@ -142,13 +173,16 @@ app.post('/start-instructions', async (req, res) => {
 
   if (!isBoardReady || !motorAvancer || !motorPlier) {
     console.log("Board or components not ready. Instructions will not be executed at this time."); // Added log for clarity
+    io.emit('progress_update', { percentage: 0, message: "Board or components not ready.", error: true });
     return res.status(503).json({ message: "Board or components not ready yet. Please wait. Instructions received but not executed." });
   }
   if (isRunningInstructions) {
+    io.emit('progress_update', { percentage: 0, message: "Instructions already in progress.", error: true });
     return res.status(429).json({ message: "Instructions already in progress." });
   }
 
   isRunningInstructions = true;
+  io.emit('progress_update', { percentage: 0, message: "Starting instructions..." });
   console.log("Received request to start instructions via interface.");
   try {
     await runInstructions(instructionsFromRequest);
@@ -168,14 +202,17 @@ app.post('/start-instructions', async (req, res) => {
       // If /emergency-stop did NOT send a response, you could add one here:
       // if (!res.headersSent) { // Check if headers were already sent
         res.status(200).json({ message: "Instructions sequence halted by emergency stop." });
+        io.emit('progress_update', { percentage: currentProgress, message: "Instructions halted by emergency stop.", error: true });
       // }
     } else {
       // Only send this message if not emergency stopped
       res.status(201).json({ message: "All instructions completed successfully" });
+      io.emit('instructions_complete', { message: "All instructions completed successfully." });
       // res.json({ message: "All instructions completed successfully." });
     }
   } catch (error) {
     console.error("Error during instruction execution triggered by interface:", error);
+    io.emit('progress_update', { percentage: currentProgress, message: "Error executing instructions.", error: true });
     if (!res.headersSent) { // Avoid sending headers twice if error occurs after some response
         res.status(500).json({ message: "Error executing instructions." });
     }
@@ -187,6 +224,24 @@ app.post('/start-instructions', async (req, res) => {
 // Function to handle AVANCER action
 function handleAvancer(instruction, motor) {
   return new Promise(async (resolve) => {
+    if (SIMULATION_MODE) {
+      const motorName = motor === motorAvancer ? 'Avancer' : 'Plier';
+      console.log(`SIM: Action ${instruction.action} pour moteur ${motorName} avec valeur ${instruction.valeur}. Délai: ${SIMULATION_DELAY_MS}ms`);
+      setTimeout(() => {
+        console.log(`SIM: ${instruction.action} pour moteur ${motorName} terminée.`);
+        if (motorName === 'Plier') { // Simuler le retour du moteur Plier
+          console.log(`SIM: Moteur Plier retourne à la position initiale. Délai: ${SIMULATION_DELAY_MS}ms`);
+          setTimeout(() => {
+            console.log(`SIM: Moteur Plier retourné à la position initiale.`);
+            resolve();
+          }, SIMULATION_DELAY_MS);
+        } else {
+          resolve();
+        }
+      }, SIMULATION_DELAY_MS);
+      return;
+    }
+
     // We need to convert mm to steps
     // For now, let's assume 'valeur' is steps for simplicity
     let steps = instruction.valeur;
@@ -241,6 +296,15 @@ function executeInstruction(instruction) {
   return new Promise(async (resolve) => {
     console.log(`Executing: ${instruction.action}, Value: ${instruction.valeur || 'N/A'}`);
 
+    if (SIMULATION_MODE && instruction.action !== "COUPER") { // Couper n'a pas de délai spécifique pour l'instant en simu
+        const motorToSimulate = instruction.action === "AVANCER" ? motorAvancer : motorPlier;
+        await handleAvancer(instruction, motorToSimulate); // handleAvancer gère déjà le délai de simulation
+        resolve();
+        return;
+    }
+    // La gestion de COUPER en mode simulation se fera ci-dessous si nécessaire, 
+    // ou on peut ajouter une logique de délai spécifique ici aussi pour COUPER.
+
     if (instruction.action === "AVANCER") {
       await handleAvancer(instruction, motorAvancer);
       resolve();
@@ -250,7 +314,15 @@ function executeInstruction(instruction) {
     } else if (instruction.action === "COUPER") {
       //await handleAvancer(instruction, motorAvancer);
       console.log("COUPER action - (Not yet implemented)");
-      resolve();
+      if (SIMULATION_MODE) {
+        console.log(`SIM: Action COUPER. Délai: ${SIMULATION_DELAY_MS / 2}ms`); // Délai plus court pour couper
+        setTimeout(() => {
+          console.log("SIM: COUPER terminée.");
+          resolve();
+        }, SIMULATION_DELAY_MS / 2);
+      } else {
+        resolve(); // Résoudre immédiatement si pas de simulation et pas d'implémentation Arduino
+      }
     } else {
       console.log("Unknown action:", instruction.action);
       resolve(); // Resolve even if unknown to continue sequence
@@ -260,40 +332,66 @@ function executeInstruction(instruction) {
 
 // Function to run all instructions sequentially
 async function runInstructions(instructionList) {
-  // Ensure motors are defined before trying to use them if this function can be called before board ready
-  if (!motorAvancer || !motorPlier) {
-      console.error("Motors not initialized yet!");
-      // Potentially throw an error or return early if this state is possible
-      // However, our /start-instructions endpoint checks isBoardReady, which implies motors are set up.
-      return;
+  if (!Array.isArray(instructionList)) {
+    console.error("instructionList is not an array:", instructionList);
+    io.emit('progress_update', { percentage: 0, message: "Invalid instruction format.", error: true });
+    return;
   }
-  if (instructionList && instructionList.length > 0) {
-    console.log("\n--- Starting Instructions ---");
-    for (const instruction of instructionList) {
-      if (emergencyStopRequested) { // ADDED: Check for emergency stop
-        console.log("EMERGENCY STOP triggered. Halting instruction execution loop.");
-        break; // Exit the loop
-      }
-      await executeInstruction(instruction);
-    }
-    // After loop
-    if (emergencyStopRequested) { // ADDED: Log if loop was exited due to emergency stop
-      console.log("Instruction loop terminated by emergency stop.");
-    } else {
-      console.log("--- All instructions completed ---");
-    }
-  } else {
-    console.log("No instructions to execute.");
+  const totalInstructions = instructionList.length;
+  if (totalInstructions === 0) {
+    console.log("Instruction list is empty.");
+    io.emit('instructions_complete', { message: "Instruction list is empty." });
+    return;
   }
-  // process.exit(0); // Uncomment to exit after completion
+
+  console.log(`Starting execution of ${totalInstructions} instructions.`);
+  io.emit('progress_update', { percentage: 0, message: `Starting ${totalInstructions} instructions.`, totalInstructions });
+
+  for (let i = 0; i < totalInstructions; i++) {
+    if (emergencyStopRequested) {
+      console.log("Emergency stop requested. Halting instruction execution.");
+      io.emit('progress_update', { percentage: currentProgress, message: "Emergency stop activated.", error: true });
+      break; // Exit the loop
+    }
+    const instruction = instructionList[i];
+    console.log(`Executing instruction ${i + 1}/${totalInstructions}:`, instruction);
+    await executeInstruction(instruction);
+    
+    currentProgress = Math.round(((i + 1) / totalInstructions) * 100);
+    console.log(`Progress: ${currentProgress}%`);
+    io.emit('progress_update', { 
+      percentage: currentProgress, 
+      message: `Executed: ${instruction.action} ${instruction.valeur || ''}`,
+      currentInstruction: i + 1,
+      totalInstructions: totalInstructions
+    });
+
+    // Optional: Add a small delay if needed, e.g., for smoother progress updates
+    // await new Promise(resolve => setTimeout(resolve, 50)); 
+  }
+
+  if (!emergencyStopRequested) {
+    console.log("All instructions executed.");
+    // io.emit('instructions_complete', { message: "All instructions executed." }); // This is handled in the calling function's success path
+  }
+  // Reset emergency stop for the next run, or manage its state more globally if needed.
+  // emergencyStopRequested = false; // It's reset when /start-instructions is called
 }
 
-// Start the process - REMOVED, will be triggered by button
-// runInstructions();
+io.on('connection', (socket) => {
+  console.log('A user connected to WebSocket');
+  socket.emit('connection_ack', { message: "Successfully connected to WebSocket." });
 
-board.on("error", (err) => {
-  console.error("Board error:", err);
+  socket.on('disconnect', () => {
+    console.log('User disconnected from WebSocket');
+  });
 });
+
+if (board) { // Seulement attacher les listeners si le board existe (pas en mode simulation)
+  board.on("error", (err) => {
+    console.error("Board error:", err);
+  });
+}
 
 // Note: To use 'fetch' in Node.js versions prior to 18,
 // you might need to install 'node-fetch': npm install node-fetch
